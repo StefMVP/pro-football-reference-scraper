@@ -1,4 +1,5 @@
 from typing import List
+import datetime
 
 from bs4 import BeautifulSoup
 from bs4 import Comment
@@ -13,18 +14,23 @@ from Position import Position
 from Config import Config
 
 
-def get_games(game_data_tds):
+def get_games(game_data_tds, teamName: str):
     games = []
+    counter = 0
     for game_data_td in game_data_tds:
         try:
+            if counter == Config.maxGamesDebug:
+                return games
+
             a_obj = game_data_td.find('a')
             if not a_obj:
                 continue
             game_data_stub = a_obj.attrs['href']
             if not game_data_stub:
                 continue
-            game = get_game_data(game_data_stub)
+            game = get_game_data(game_data_stub, teamName)
             games.append(game)
+            counter += 1
         except Exception as e:
             print("ERROR get_fantasy_data - gamedata: ", e)
     return games
@@ -50,10 +56,9 @@ def get_all_players(positions: List[Position], year: int):
             pos = row.find('td', attrs={'data-stat': 'fantasy_pos'}).get_text()
             if positions and Position.str_to_enum(pos) not in positions:
                 continue
-            players.append(Player(name, pos, stub))
+            players.append(Player(name, pos, stub, ''))
         except Exception as e:
             print("ERROR get_all_players: ", e)
-
     return players
 
 
@@ -64,9 +69,6 @@ def get_fantasy_data(players: List[Player], year: int):
         try:
             r = requests.get(Config.base_url + player.UrlStub + '/fantasy/' + str(year))
             soup = BeautifulSoup(r.content, 'html.parser')
-
-            game_data_tds = soup.find_all('td', attrs={"data-stat": "game_date"})
-            games_data = get_games(game_data_tds)
 
             parsed_table = soup.find_all('table')[0]
 
@@ -85,9 +87,20 @@ def get_fantasy_data(players: List[Player], year: int):
             tdf = tdf.assign(Year=year)
             tdf = tdf.drop(columns={'Rk'})
 
+            teamName = soup.find('span', attrs={"itemprop": "affiliation"}).string
+
+            game_data_tds = soup.find_all('td', attrs={"data-stat": "game_date"})
+            games_data = get_games(game_data_tds, teamName)
+
             for index, row in tdf.iterrows():
                 rowDate = parse(row['Date'])
                 rowDateBefore = tdf.loc[index-1, 'Date'] if index != 0 else ''
+                if not isinstance(rowDateBefore, datetime.date):
+                    try:
+                        rowDateBefore = parse(rowDateBefore)
+                    except:
+                        rowDateBefore = None
+
                 if rowDate and rowDateBefore:
                     tdf.loc[index, 'DaysRest'] = (rowDate - rowDateBefore).days if (rowDate - rowDateBefore) else ''
 
@@ -103,6 +116,10 @@ def get_fantasy_data(players: List[Player], year: int):
                         tdf.loc[index, 'Temperature'] = game.Temperature if game.Temperature else ''
                         tdf.loc[index, 'RelativeHumidity'] = game.RelativeHumidity if game.RelativeHumidity else ''
                         tdf.loc[index, 'WindMph'] = game.WindMph if game.WindMph else ''
+                        tdf.loc[index, 'OppDefTotExpected'] = game.OppDefTotExpected if game.OppDefTotExpected else ''
+                        tdf.loc[index, 'OppDefPassExpected'] = game.OppDefPassExpected if game.OppDefPassExpected else ''
+                        tdf.loc[index, 'OppDefRushExpected'] = game.OppDefRushExpected if game.OppDefRushExpected else ''
+                        tdf.loc[index, 'OppDefTurnOverExpected'] = game.OppDefTurnOverExpected if game.OppDefTurnOverExpected else ''
 
             df.append(tdf)
             time.sleep(Config.sleep_time)
@@ -113,10 +130,10 @@ def get_fantasy_data(players: List[Player], year: int):
     return df
 
 
-def get_game_data(game_stub: str):
-    print("----Start game ", game_stub)
+def get_game_data(gameStub: str, teamName: str):
+    print("----Start game ", gameStub)
     try:
-        r = requests.get(Config.base_url + game_stub)
+        r = requests.get(Config.base_url + gameStub)
         soup = BeautifulSoup(r.content, 'html.parser')
         scorebox = soup.find("div", {"class": "scorebox_meta"})
         date = parse(scorebox.find('div').string) if scorebox.find('div') else None
@@ -129,10 +146,12 @@ def get_game_data(game_stub: str):
 
         comments = soup.find_all(string=lambda text: isinstance(text, Comment))
         gameInfoComment = None
+        expectedPointsComment = None
         for c in comments:
             if "div_game_info" in str(c):
                 gameInfoComment = c.extract()
-                break
+            elif "expected_points" in str(c):
+                expectedPointsComment = c.extract()
 
         if gameInfoComment:
             extraSoup = BeautifulSoup(gameInfoComment, 'html.parser')
@@ -154,11 +173,22 @@ def get_game_data(game_stub: str):
                     relativeHumidity = weather[2].split(' ')[1] if weather else None
                     wind_mph = weather[2].split(' ')[1] if weather else None
 
+        if expectedPointsComment:
+            extraSoup = BeautifulSoup(expectedPointsComment, 'html.parser')
+            expectedPoints = extraSoup.find("table", {"id": "expected_points"})
+            expectedPointsRows = expectedPoints.findAll('th', attrs={'data-stat': 'team_name', 'scope': 'row'})
+
+            for expectedPointsRow in expectedPointsRows:
+                if expectedPointsRow.string not in teamName:
+                    oppDefTotExpected = expectedPointsRow.previous.find('td', attrs={'data-stat': 'pbp_exp_points_def_tot'}).string
+                    oppDefPassExpected = expectedPointsRow.previous.find('td', attrs={'data-stat': 'pbp_exp_points_def_pass'}).string
+                    oppDefRushExpected = expectedPointsRow.previous.find('td', attrs={'data-stat': 'pbp_exp_points_def_rush'}).string
+                    oppDefTurnOverExpected = expectedPointsRow.previous.find('td', attrs={'data-stat': 'pbp_exp_points_def_to'}).string
+
+
         time.sleep(Config.sleep_time)
-        print("----End game ", game_stub)
-
-        return Game(date, startTime, stadium, timeOfGame, attendance, roof, surface, temperature, relativeHumidity, wind_mph)
-
+        print("----End game ", gameStub)
+        return Game(date, startTime, stadium, timeOfGame, attendance, roof, surface, temperature, relativeHumidity, wind_mph, oppDefTotExpected, oppDefPassExpected, oppDefRushExpected, oppDefTurnOverExpected)
     except Exception as e:
         print("ERROR get_game_data: ", e)
 
