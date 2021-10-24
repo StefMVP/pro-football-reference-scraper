@@ -4,7 +4,7 @@ class Player:
     UrlStub = ''
 
     def __init__(self, nameParam, positionParam, urlStubParam):
-        self.Name = nameParam
-        self.Position = positionParam
-        self. UrlStub = urlStubParam
+        self.Name = nameParam.strip() if nameParam else ''
+        self.Position = positionParam.strip() if positionParam else ''
+        self. UrlStub = urlStubParam.strip() if urlStubParam else ''
 
