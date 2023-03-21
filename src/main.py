@@ -40,6 +40,10 @@ def get_all_players(positions: List[Position], year: int):
     players = []
     r = requests.get(Config.base_url + '/years/' + str(year) + '/fantasy.htm')
     soup = BeautifulSoup(r.content, 'html.parser')
+    print(Config.base_url + '/years/' + str(year) + '/fantasy.htm')
+    if len(soup.find_all('table')) == 0:
+        print("Error: No tables found. This happens when you are 429 rate limited")
+        return []
     parsed_table = soup.find_all('table')[0]
 
     for currCount, row in enumerate(parsed_table.find_all('tr')[2:]):
@@ -67,7 +71,9 @@ def get_fantasy_data(players: List[Player], year: int):
     for player in players:
         print("Start Player ", player.Name)
         try:
-            r = requests.get(Config.base_url + player.UrlStub + '/fantasy/' + str(year))
+            #player_url = 'https://www.pro-football-reference.com/players/L/LuckAn00/fantasy/2018'
+            player_url = Config.base_url + player.UrlStub + '/fantasy/' + str(year)
+            r = requests.get(player_url)
             soup = BeautifulSoup(r.content, 'html.parser')
 
             parsed_table = soup.find_all('table')[0]
@@ -87,7 +93,7 @@ def get_fantasy_data(players: List[Player], year: int):
             tdf = tdf.assign(Year=year)
             tdf = tdf.drop(columns={'Rk'})
 
-            teamName = soup.find('span', attrs={"itemprop": "affiliation"}).string
+            teamName = soup.find('span', attrs={"itemprop": "affiliation"}).string if soup.find('span', attrs={"itemprop": "affiliation"}) else ""
 
             game_data_tds = soup.find_all('td', attrs={"data-stat": "game_date"})
             games_data = get_games(game_data_tds, teamName)
@@ -157,29 +163,42 @@ def get_game_data(gameStub: str, teamName: str):
             extraSoup = BeautifulSoup(gameInfoComment, 'html.parser')
             gameInfo = extraSoup.find("div", {"id": "div_game_info"})
             gameInfoRows = gameInfo.findAll("tr")
+            relativeHumidity = ''
+            wind_mph = ''
+            temperature = ''
+            roof = ''
+            surface = ''
             for gameInfoRow in gameInfoRows:
                 th = gameInfoRow.find("th")
                 td = gameInfoRow.find("td")
                 if not th or not td:
                     continue
                 if th.string == "Roof":
-                    roof = td.string
+                    roof = td.string if td else ""
                 elif th.string == "Surface":
-                    surface = td.string
+                    surface = td.string if td else ""
                 elif th.string == "Weather":
-                    weather = td.string
+                    weather = td.string if td else ""
                     weather = weather.split(', ') if weather else None
-                    temperature = weather[0].split(' ')[0] if weather else None
-                    relativeHumidity = weather[2].split(' ')[1] if weather else None
-                    wind_mph = weather[2].split(' ')[1] if weather else None
+                    for item in weather:
+                        if item.startswith("relative"):
+                            relativeHumidity = item.split(' ')[2] if len(item.split(' ')) > 2 else None
+                        elif item.startswith("wind"):
+                            wind_mph = item.split(' ')[1] if len(item.split(' ')) > 1 else None
+                        else:
+                            temperature = item.split(' ')[0] if len(item.split(' ')) > 0 else None
 
         if expectedPointsComment:
             extraSoup = BeautifulSoup(expectedPointsComment, 'html.parser')
             expectedPoints = extraSoup.find("table", {"id": "expected_points"})
             expectedPointsRows = expectedPoints.findAll('th', attrs={'data-stat': 'team_name', 'scope': 'row'})
 
+            oppDefTotExpected = ''
+            oppDefPassExpected = ''
+            oppDefRushExpected = ''
+            oppDefTurnOverExpected = ''
             for expectedPointsRow in expectedPointsRows:
-                if expectedPointsRow.string not in teamName:
+                if teamName and expectedPointsRow.string not in teamName:
                     oppDefTotExpected = expectedPointsRow.previous.find('td', attrs={'data-stat': 'pbp_exp_points_def_tot'}).string
                     oppDefPassExpected = expectedPointsRow.previous.find('td', attrs={'data-stat': 'pbp_exp_points_def_pass'}).string
                     oppDefRushExpected = expectedPointsRow.previous.find('td', attrs={'data-stat': 'pbp_exp_points_def_rush'}).string
